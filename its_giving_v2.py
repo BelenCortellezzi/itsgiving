@@ -549,11 +549,12 @@ def decide(face, hands, body, tongue, gesture, m):
 
     if tongue > T["tongue"]:
         return "tongue_out", d
-        smiling = over("smile", m, "z_smile", "smile")
-    if not hands and m["tilt"] > T["tilt"] and smiling:
+    smiling = over("smile", m, "z_smile", "smile")
+    if not hands and (m["tilt"] > T["tilt"] or m["turn"] > T["head_turn"]) and smiling:
         return "confused", d
     if not smiling and min(m["z_frown"], Z_CAP) + min(m["z_lip"], Z_CAP) >= Z["grimace"]:
         return "disgusted", d
+    return None, d
 
 
 def draw_hud(img, shown, raw, d, face, hands, body, base):
