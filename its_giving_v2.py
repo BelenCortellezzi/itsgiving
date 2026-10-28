@@ -26,15 +26,15 @@ import mediapipe as mp
 from mediapipe.tasks import python as mp_tasks
 from mediapipe.tasks.python import vision
 
-POSES = ["time_out", "heart", "cover_nose", "crashing_out", "dance", "nose_closed", "flirty", "hand_up",
-         "tongue_out", "open_mouth", "disgusted", "talking_to_wall", "suspicious", "spin"]
-TEST_KEYS = "1234567890-=[]"
+POSES = ["time_out", "heart", "cover_nose", "crashing_out", "dance", "nose_closed", "thinking", "confused", "hand_up",
+         "tongue_out", "disgusted"]
+TEST_KEYS = "1234567890-"
 
 FACE_SCALE = 2.0
 HOLD_FRAMES = 10
 ARM = {
     "spin": 15, "suspicious": 8, "talking_to_wall": 6, "dance": 6, "crashing_out": 4,
-    "open_mouth": 4, "tongue_out": 5, "disgusted": 5,
+    "open_mouth": 4, "tongue_out": 5, "disgusted": 5, "confused": 5,
 }
 
 Z = dict(
@@ -44,6 +44,8 @@ Z = dict(
     sneer=4.5,
     disgust=14.0,
     squint=4.0,
+    smile=5.0,
+    grimace=6.0,
 )
 Z_CAP = 8.0
 FLOOR = dict(
@@ -52,11 +54,13 @@ FLOOR = dict(
     tongue_jaw=0.18,
     sneer=0.06,
     squint=0.18,
+    smile=0.35,
 )
 T = dict(
     tongue=0.5,
     head_turn=0.15,
     gesture=0.035,
+    tilt=7.0,
 )
 
 CALIB_FILE = "calibration.json"
@@ -396,6 +400,9 @@ class Face:
         self.nose, self.chin, self.top = p[1], p[152], p[10]
         self.mouth = (p[13] + p[14]) / 2
         self.eye_y = float((p[33][1] + p[263][1]) / 2)
+        # forehead es el centro de la frente y tilt es cuántos grados tenés la cabeza inclinada.
+        self.forehead = p[151] 
+        self.tilt = float(abs(np.degrees(np.arctan2(p[263][1] - p[33][1], p[263][0] - p[33][0]))))
         cl, cr = p[234], p[454]
         self.turn_signed = float((self.nose[0] - cl[0]) / max(cr[0] - cl[0], 1e-3) - 0.5)
         self.bs = {c.category_name: c.score for c in (blendshapes or [])}
@@ -487,6 +494,8 @@ def measure(face, base):
         "squint": max(pair("eyeSquint"), pair("eyeBlink")),
         "z_squint": max(zpair("eyeSquint"), zpair("eyeBlink")),
         "turn": abs(face.turn_signed - base.neutral_turn),
+        "smile": pair("mouthSmile"), "z_smile": zpair("mouthSmile"),
+        "tilt": face.tilt,
     }
     cap = lambda v: min(v, Z_CAP)
     m["z_disgust"] = 2 * cap(m["z_sneer"]) + cap(m["z_brow"]) + cap(m["z_frown"]) + cap(m["z_lip"])
@@ -502,8 +511,7 @@ def decide(face, hands, body, tongue, gesture, m):
     """Return (pose or None, debug dict)."""
     d = {"hands": len(hands)}
     if face is None:
-        gone = not hands and (body is None or not body.seen)
-        return ("spin" if gone else None), d
+        return None, d
 
     fw = face.w
     near = lambda a, b, k: dist(a, b) < k * fw
@@ -534,22 +542,18 @@ def decide(face, hands, body, tongue, gesture, m):
     for h in hands:
         if near(h.thumb, face.nose, 0.35) and near(h.index, face.nose, 0.35) and near(h.thumb, h.index, 0.3):
             return "nose_closed", d
-        if near(h.index, face.mouth, 0.22) and not near(h.palm, face.mouth, 0.3):
-            return "flirty", d
+        if near(h.index, face.forehead, 0.3) and not h.open:
+            return "thinking", d
         if h.open and h.palm[1] < face.nose[1] and abs(h.palm[0] - face.nose[0]) > 0.8 * fw:
             return "hand_up", d
 
     if tongue > T["tongue"]:
         return "tongue_out", d
-    if over("jaw_open", m, "z_jaw", "jaw"):
-        return "open_mouth", d
-    if over("sneer", m, "z_sneer", "sneer") or m["z_disgust"] >= Z["disgust"]:
+        smiling = over("smile", m, "z_smile", "smile")
+    if not hands and m["tilt"] > T["tilt"] and smiling:
+        return "confused", d
+    if not smiling and min(m["z_frown"], Z_CAP) + min(m["z_lip"], Z_CAP) >= Z["grimace"]:
         return "disgusted", d
-    if hands and gesture > T["gesture"]:
-        return "talking_to_wall", d
-    if m["turn"] > T["head_turn"] and over("squint", m, "z_squint", "squint"):
-        return "suspicious", d
-    return None, d
 
 
 def draw_hud(img, shown, raw, d, face, hands, body, base):
